@@ -122,7 +122,6 @@ function load_base_images {
 
   docker pull mcr.microsoft.com/windows/nanoserver:1809
   docker tag (docker images mcr.microsoft.com/windows/nanoserver:1809 -q) mcr.microsoft.com/windows/nanoserver
-  docker build -t kubeletwin/pause /var/vcap/jobs/kubelet-windows/config
 
   Start-Job -ScriptBlock {
     docker pull mcr.microsoft.com/windows/servercore:ltsc2019
