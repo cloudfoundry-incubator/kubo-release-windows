@@ -2,6 +2,7 @@ name: kubelet-windows
 templates:
   bin/drain.ps1.erb: bin/drain.ps1
   bin/kubelet_ctl.ps1.erb: bin/kubelet_ctl.ps1
+  bin/pre-start.ps1.erb: bin/pre-start.ps1
   config/apiserver-ca.pem.erb: config/apiserver-ca.pem
   config/cloud-provider.ini.erb: config/cloud-provider.ini
   config/Dockerfile: config/Dockerfile
@@ -13,9 +14,10 @@ templates:
   config/kubeletconfig.yml.erb: config/kubeletconfig.yml
   config/openstack-ca.crt.erb: config/openstack-ca.crt
   config/service_key.json.erb: config/service_key.json
+
 packages:
-- kubernetes-windows
 - cni-windows
+
 properties:
   api-token:
     description: The token to access Kubernetes API
@@ -51,6 +53,7 @@ properties:
     description: CA certificate of the authority granting access to kubelet server
   tls.kubernetes:
     description: Certificate and private key for the Kubernetes master
+
 consumes:
 - name: cloud-provider
   optional: true

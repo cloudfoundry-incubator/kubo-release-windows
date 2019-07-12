@@ -3,12 +3,10 @@ name: kube-proxy-windows
 
 templates:
   bin/kube_proxy_ctl.ps1.erb: bin/kube_proxy_ctl.ps1
+  bin/pre-start.ps1.erb: bin/pre-start.ps1
   config/kubeconfig.erb: config/kubeconfig
   config/config.yml.erb: config/config.yml
   config/ca.pem.erb: config/ca.pem
-
-packages:
-- kubernetes-windows
 
 properties:
   api-token:

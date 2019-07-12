@@ -1,6 +1,0 @@
----
-name: kubernetes-windows
-
-files:
-- kubernetes-windows-1.14.1/*
-- exiter.ps1
