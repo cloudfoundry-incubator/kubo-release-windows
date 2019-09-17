@@ -10,77 +10,120 @@ trap { $host.SetShouldExit(1) }
     end
   end
 -%>
-<%-
-  def get_network_name
-    if p("backend-type") == "win-overlay"
-      "vxlan0"
-    else
-      "cbr0"
-    end
-  end
--%>
+$networkType = "<%= p("backend-type") %>"
+
+function get_network_name {
+  if ($networkType -eq "win-overlay") {
+    return "flannel.4096"
+  } else {
+    return "cbr0"
+  }
+}
 
 function start_flanneld {
   <% etcd_endpoints = link('etcd').instances.map { |server| get_url(server, 2379) }.join(",") %>
 
   mkdir -force /etc/cni/net.d
-  $confFile= '
+  $confFile= @"
 {
-  "name": "<%= get_network_name %>",
-  "plugins": [
-    {
-      "type": "flannel",
-      "delegate": {
-        "hairpinMode": true,
-        "isDefaultGateway": true,
-        "type": "<%= p('backend-type') %>",
-        "dns": {
-          "nameservers": ["10.100.200.10"],
-          "search": ["svc.cluster.local"]
-        },
-        "policies": [
-          {
-            "Name": "EndpointPolicy",
-            "Value": {
-              "Type": "OutBoundNAT",
-              "ExceptionList": [
-                "<%= p('pod-network-cidr') %>",
-                "10.100.200.0/12",
-                "<%= spec.ip.split(".")[0...-1].append(0).join(".") %>/24"
-              ]
-            }
-          },
-          {
-            "Name": "EndpointPolicy",
-            "Value": {
-              "Type": "ROUTE",
-              "DestinationPrefix": "10.100.200.0/24",
-              "NeedEncap": true
-            }
-          },
-          {
-            "Name": "EndpointPolicy",
-            "Value": {
-              "Type": "ROUTE",
-              "DestinationPrefix": "<%= spec.ip %>/32",
-              "NeedEncap": true
-            }
-          }
-        ]
-      }
-    }
-  ]
+  "name": "$(get_network_name)",
+  "cniVersion": "0.3.0",
+  "capabilities": {
+    "dns": true
+  },
+  "type": "flannel",
+  "delegate": {
+    "hairpinMode": true,
+    "isDefaultGateway": true,
+    "type": "<%= p('backend-type') %>",
+    "dns": {
+      "nameservers": ["10.100.200.10"],
+      "search": ["svc.cluster.local"]
+    },
+    "policies": [
+      {
+        "Name": "EndpointPolicy",
+        "Value": {
+          "Type": "OutBoundNAT",
+          "ExceptionList": [
+            "<%= p('pod-network-cidr') %>",
+            "10.100.200.0/12"<% if p("backend-type") == "win-bridge" %>,
+            "<%= spec.ip.split(".")[0...-1].append(0).join(".") %>/24"<% end %>
+          ]
+        }
+      },
+      {
+        "Name": "EndpointPolicy",
+        "Value": {
+          "Type": "ROUTE",
+          "DestinationPrefix": "10.100.200.0/24",
+          "NeedEncap": true
+        }
+      }<% if p("backend-type") == "win-bridge" %>,
+      {
+        "Name": "EndpointPolicy",
+        "Value": {
+          "Type": "ROUTE",
+          "DestinationPrefix": "<%= spec.ip %>/32",
+          "NeedEncap": true
+        }
+      }<% end %>
+    ]
+  }
 }
-'
-  Set-Content -Path /etc/cni/net.d/50-flannel.conflist -Value $confFile
+"@
+  Set-Content -Path /etc/cni/net.d/50-flannel.conf -Value $confFile
 
+  $gateway=(Get-NetIPConfiguration).IPv4DefaultGateway.NextHop
+
+  if ($networkType -eq "win-overlay") {
+    Get-HnsNetwork | ? Type -eq "L2Bridge" | Remove-HNSNetwork
+  } else {
+    Get-HnsNetwork | ? Type -eq "Overlay" | Remove-HNSNetwork
+  }
+  if (!(Get-HnsNetwork | ? Name -Eq "External")) {
+    ipmo /var/vcap/jobs/flanneld-windows/bin/hns.psm1
+    if ($networkType -eq "win-overlay") {
+      New-HNSNetwork -Type "Overlay" -AddressPrefix "192.168.255.0/30" -Gateway "192.168.255.1" -Name "External" -SubnetPolicies @(@{Type = "VSID"; VSID = 9999; })  -Verbose
+    } else {
+      New-HNSNetwork -Type "L2Bridge" -AddressPrefix "192.168.255.0/30" -Gateway "192.168.255.1" -Name "External" -Verbose
+    }
+  }
+
+  # Fix for gateway disappearing upon HNS network creation on Azure. Should be a no-op on other platforms
+  route add 0.0.0.0 mask 0.0.0.0 $gateway
+  restart-service docker
 
   /var/vcap/packages/flanneld-windows/flanneld.exe `
     --etcd-endpoints=<%= etcd_endpoints %> `
     --ip-masq `
     --etcd-certfile=/var/vcap/jobs/flanneld-windows/config/etcd-client.crt `
     --etcd-keyfile=/var/vcap/jobs/flanneld-windows/config/etcd-client.key `
-    --etcd-cafile=/var/vcap/jobs/flanneld-windows/config/etcd-ca.crt
+    --etcd-cafile=/var/vcap/jobs/flanneld-windows/config/etcd-ca.crt `
+    --iface=<%= spec.ip %>
 }
 
+function disable_gcp_address_management {
+  # https://github.com/kubernetes/kubernetes/issues/75561
+  $agentConfig = "/Program Files/Google/Compute Engine/instance_configs.cfg"
+  $disable = @"
+
+# Modified by BOSH
+[addressManager]
+disable=true
+"@
+  if ([System.IO.File]::Exists($agentConfig))
+  {
+    $file = Get-Content $agentConfig
+    $matches = $file | %{$_ -match "# Modified by BOSH"}
+    if (-not ($matches -contains $true))
+    {
+      Add-Content -Path $agentConfig -Value $disable
+    }
+
+    Restart-Service GCEAgent
+  }
+}
+
+disable_gcp_address_management
 start_flanneld

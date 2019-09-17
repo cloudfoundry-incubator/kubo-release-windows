@@ -1,17 +1,84 @@
+<%-
+  def hns_network_name
+    if link('flanneld-windows').p('backend-type') == "win-overlay"
+      "flannel.4096"
+    else
+      "cbr0"
+    end
+  end
+-%>
 trap { $host.SetShouldExit(1) }
 
+<% if_p('cloud-provider') do |cloud_provider| %>
+  <% iaas = cloud_provider %>
+  $cloud_provider="<%= cloud_provider %>"
+<% end %>
+
+$hnsNetworkName = "<%= hns_network_name %>"
+$sourceVIPFile = "/var/vcap/data/kube-proxy-windows/sourceVip.json"
+$configFile = "/var/vcap/jobs/kube-proxy-windows/config/config.yml"
+
 function ensure_kubelet_is_running {
-  curl.exe --fail http://localhost:10248/healthz
+  curl.exe --fail --retry 10 --retry-delay 0 --retry-max-time 60 --retry-connrefused http://localhost:10248/healthz
   if (-not $?) {
     throw "kubelet is not available"
   }
 }
 
-function start_kube_proxy {
-  $network = Get-HnsNetwork | ? Type -Eq L2Bridge
-  $env:KUBE_NETWORK = $network.Name
+function set_source_vip {
+  if (!(Test-Path $sourceVIPFile)) {
+    $network = Get-HnsNetwork | ? Name -Eq $hnsNetworkName
+    $subnet = $network.Subnets[0].AddressPrefix
+    $ipamConfig = @"
+{"cniVersion": "0.2.0", "name": "$hnsNetworkName", "ipam":{"type":"host-local","ranges":[[{"subnet":"$subnet"}]],"dataDir":"/var/lib/cni/networks"}}
+"@
+    $env:CNI_COMMAND="ADD"
+    $env:CNI_CONTAINERID="dummy"
+    $env:CNI_NETNS="dummy"
+    $env:CNI_IFNAME="dummy"
+    $env:CNI_PATH="/var/vcap/packages/cni-windows/bin"
 
-  C:\var\vcap\packages\kubernetes-windows\bin\kube-proxy.exe -v 5 --config /var/vcap/jobs/kube-proxy-windows/config/config.yml
+    echo $ipamConfig | /var/vcap/packages/cni-windows/bin/host-local.exe > $sourceVIPFile
+  }
+
+  if (!(Select-String -Path $configFile -Pattern "sourceVip")) {
+    $vip = (Get-Content $sourceVIPFile | ConvertFrom-Json).ip4.ip.Split("/")[0]
+    $config = @"
+winkernel:
+  sourceVip: $vip
+"@
+    Add-Content -Path $configFile -Value $config
+  }
+}
+
+function get_hostname_override {
+  if ($cloud_provider -in "gce", "vsphere") {
+    return ""
+  } elseif ($cloud_provider -eq "azure") {
+    return (cat C:\var\vcap\bosh\settings.json | ConvertFrom-Json).agent_id
+  } elseif ($cloud_provider -eq "aws") {
+    return (curl.exe http://169.254.169.254/latest/meta-data/hostname)
+  } else {
+    return "<%= spec.ip %>"
+  }
+}
+
+function set_hostname_overide {
+  if (!(Select-String -Path $configFile -Pattern "hostnameOverride")) {
+    $hostname = get_hostname_override
+    $config = @"
+hostnameOverride: $hostname
+"@
+    Add-Content -Path $configFile -Value $config
+  }
+
+}
+
+function start_kube_proxy {
+  $env:KUBE_NETWORK = $hnsNetworkName
+
+  C:\var\vcap\packages\kubernetes-windows\bin\kube-proxy.exe -v 5 `
+  --config $configFile
 }
 
 function check_for_networking {
@@ -45,6 +112,9 @@ function misc_setup {
 function main() {
   misc_setup
   check_for_networking
+  ensure_kubelet_is_running
+  set_source_vip
+  set_hostname_overide
   start_kube_proxy
 }
 

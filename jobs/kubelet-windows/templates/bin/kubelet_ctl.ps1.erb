@@ -58,8 +58,10 @@ function delete_stale_drained_node {
 }
 
 function get_hostname_override {
-  if ($cloud_provider -in "gce", "azure") {
+  if ($cloud_provider -in "gce") {
     return ""
+  } elseif ($cloud_provider -in "azure") {
+    return (cat C:\var\vcap\bosh\settings.json | ConvertFrom-Json).agent_id
   } else {
     return "<%= spec.ip %>"
   }
@@ -114,7 +116,6 @@ function check_for_networking {
 }
 
 function load_base_images {
-  # Temporary workaround until we bring our own images
   docker version
   if (-not $?) {
     throw "docker is not available"
@@ -137,7 +138,22 @@ function set_acls {
   Set-Acl C:\var $acl
 }
 
+function fix_gcp_pd {
+  $dllPath = "/var/vcap/jobs/kubelet-windows/lib/GetGcePdName.dll"
+  $profilePath = "$PsHome\profile.ps1"
+  if (-not (Test-Path $profilePath)) {
+      $nul = New-Item -Path $profilePath -Type file -ErrorAction Ignore
+  }
+  $appendProfile =
+@'
+Unblock-File -Path DLLPATH -ErrorAction Ignore
+Import-Module -Name DLLPATH -ErrorAction Ignore
+'@
+  Add-Content -Path $profilePath -Value $appendProfile.replace('DLLPATH', $dllPath) -ErrorAction Ignore
+}
+
 function main {
+  <% if iaas == "gce" %>fix_gcp_pd<% end %>
   delete_stale_drained_node
   check_for_networking
   load_base_images
