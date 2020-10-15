@@ -35,9 +35,6 @@ function check_for_networking {
 }
 
 function misc_setup {
-  # Prestart doesn't get run again on recreate, so need to do this in ctl
-  Set-NetFirewallProfile -Profile Domain, Public, Private -Enabled False
-
   <% if_p('cloud-provider') do |cloud_provider| %>
     <% if cloud_provider == "vsphere" %>
   # Override the hostname to work around
